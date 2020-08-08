@@ -197,7 +197,12 @@ class PPNet(nn.Module):
                                       kernel_size=(distances.size()[2],
                                                    distances.size()[3]))
         min_distances = min_distances.view(-1, self.num_prototypes)
-        prototype_activations = self.distance_2_similarity(min_distances)
+
+        activation_maps = distance_2_similarity(distances)
+        spikefilter = torch.tensor([[-0.5, -0.5, -0.5, -0.5], [-0.5, 2.5, 2.5, -0.5], [-0.5, 2.5, 2.5, -0.5], [-0.5, -0.5, -0.5, -0.5]])
+        spikefilter = spikefilter.expand(distances.size(0), distances.size(1), -1, -1) / distances.size(1)
+        act_map_spike = F.conv2d(activation_maps, spikefilter)
+        prototype_activations = F.maxpool2d(act_map_spike, kernel_size = (act_map_spike.size(2), act_map_spike.size(3)))
         logits = self.last_layer(prototype_activations)
         return logits, min_distances
 
