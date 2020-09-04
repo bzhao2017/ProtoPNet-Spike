@@ -20,6 +20,7 @@ def _train_or_test(model, dataloader, optimizer=None, class_specific=True, use_l
     # separation cost is meaningful only for class_specific
     total_separation_cost = 0
     total_avg_separation_cost = 0
+    total_dist_loss = 0
 
     for i, (image, label) in enumerate(dataloader):
         input = image.cuda()
@@ -30,7 +31,7 @@ def _train_or_test(model, dataloader, optimizer=None, class_specific=True, use_l
         with grad_req:
             # nn.Module has implemented __call__() function
             # so no need to call .forward
-            output, min_distances = model(input)
+            output, min_distances, act_maps, loc_x, loc_y = model(input)
 
             # compute loss
             cross_entropy = torch.nn.functional.cross_entropy(output, target)
@@ -56,6 +57,9 @@ def _train_or_test(model, dataloader, optimizer=None, class_specific=True, use_l
                 avg_separation_cost = \
                     torch.sum(min_distances * prototypes_of_wrong_class, dim=1) / torch.sum(prototypes_of_wrong_class, dim=1)
                 avg_separation_cost = torch.mean(avg_separation_cost)
+
+                #calculate distance cost
+                dist_loss = distance_loss(act_maps, loc_x, loc_y)
                 
                 if use_l1_mask:
                     l1_mask = 1 - torch.t(model.module.prototype_class_identity).cuda()
@@ -78,6 +82,7 @@ def _train_or_test(model, dataloader, optimizer=None, class_specific=True, use_l
             total_cluster_cost += cluster_cost.item()
             total_separation_cost += separation_cost.item()
             total_avg_separation_cost += avg_separation_cost.item()
+            total_dist_loss += dist_loss.item()
 
         # compute gradient and do SGD step
         if is_train:
@@ -86,14 +91,16 @@ def _train_or_test(model, dataloader, optimizer=None, class_specific=True, use_l
                     loss = (coefs['crs_ent'] * cross_entropy
                           + coefs['clst'] * cluster_cost
                           + coefs['sep'] * separation_cost
-                          + coefs['l1'] * l1)
+                          + coefs['l1'] * l1
+                          + coefs['dist'] * dist_loss)
                 else:
                     loss = cross_entropy + 0.8 * cluster_cost - 0.08 * separation_cost + 1e-4 * l1
             else:
                 if coefs is not None:
                     loss = (coefs['crs_ent'] * cross_entropy
                           + coefs['clst'] * cluster_cost
-                          + coefs['l1'] * l1)
+                          + coefs['l1'] * l1
+                          + coefs['dist'] * dist_loss)
                 else:
                     loss = cross_entropy + 0.8 * cluster_cost + 1e-4 * l1
             optimizer.zero_grad()
@@ -120,6 +127,7 @@ def _train_or_test(model, dataloader, optimizer=None, class_specific=True, use_l
     with torch.no_grad():
         p_avg_pair_dist = torch.mean(list_of_distances(p, p))
     log('\tp dist pair: \t{0}'.format(p_avg_pair_dist.item()))
+    log('\t dist loss: \t{0}'.format(total_dist_loss / n_batches))
 
     return n_correct / n_examples
 
@@ -174,3 +182,49 @@ def joint(model, log=print):
         p.requires_grad = True
     
     log('\tjoint')
+
+def per_class_test(model, dataloader, class_specific=True, log=print): 
+    log('\tper-class test')
+    start = time.time()
+    model.eval()
+    with torch.no_grad():
+        n_examples = torch.zeros(model.module.num_classes).cuda()
+        n_correct = torch.zeros(model.module.num_classes).cuda()
+        for i, (images, labels) in enumerate(dataloader): 
+            images = images.cuda()
+            labels = labels.cuda()
+            logits, _, _, _, _ = model(images)   
+            _, predicted = torch.max(logits.data, 1)
+            for j in range(labels.size(0)): 
+                corr_label = labels.data[j]
+                n_examples[corr_label] += 1
+                if predicted[j] == labels[j]: 
+                    n_correct[corr_label] += 1
+    acc = 100 * n_correct / n_examples
+    log('Mean Acc: ', torch.mean(acc))
+    for i in range(len(acc)): 
+        log('Class ' + str(i) + 'Acc: {0}'.format(acc[i]))
+    log('Time: {0}'.format(time.time() - start))
+    return torch.mean(acc)
+
+def distance_loss(attention_maps, loc_x, loc_y):
+    #attention_maps: batch_size * num_prototypes * w * h
+    #loc_x, loc_y: batch_size * num_prototypes
+    batch_size = attention_maps.size(0)
+    num_prototypes = attention_maps.size(1)
+    w = attention_maps.size(2)
+    h = attention_maps.size(3)
+
+    x = torch.linspace(0, w - 1, steps=w).cuda()    
+    y = torch.linspace(0, h - 1, steps=h).cuda()
+    grid_x, grid_y = torch.meshgrid(x, y)
+
+    exp_loc_x = loc_x.unsqueeze(2).unsqueeze(3).expand(batch_size, num_prototypes, w, h)
+    exp_loc_y = loc_y.unsqueeze(2).unsqueeze(3).expand(batch_size, num_prototypes, w, h)
+    exp_grid_x = grid_x.unsqueeze(0).unsqueeze(0).expand(batch_size, num_prototypes, w, h)
+    exp_grid_y = grid_y.unsqueeze(0).unsqueeze(0).expand(batch_size, num_prototypes, w, h)
+
+    dist_maps = (exp_loc_x - exp_grid_x)**2 + (exp_loc_y - exp_grid_y)**2
+    loss_maps = dist_maps * attention_maps
+
+    return torch.mean(loss_maps)

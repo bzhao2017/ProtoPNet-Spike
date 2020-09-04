@@ -187,24 +187,37 @@ class PPNet(nn.Module):
             return self.prototype_activation_function(distances)
 
     def forward(self, x):
+        batch_size = x.size(0)
         distances = self.prototype_distances(x)
         '''
         we cannot refactor the lines below for similarity scores
         because we need to return min_distances
         '''
         # global min pooling
+        '''
         min_distances = -F.max_pool2d(-distances,
                                       kernel_size=(distances.size()[2],
                                                    distances.size()[3]))
         min_distances = min_distances.view(-1, self.num_prototypes)
 
-        activation_maps = distance_2_similarity(distances)
-        spikefilter = torch.tensor([[-0.5, -0.5, -0.5, -0.5], [-0.5, 2.5, 2.5, -0.5], [-0.5, 2.5, 2.5, -0.5], [-0.5, -0.5, -0.5, -0.5]])
-        spikefilter = spikefilter.expand(distances.size(0), distances.size(1), -1, -1) / distances.size(1)
+        activation_maps = self.distance_2_similarity(distances).view(batch_size * self.num_prototypes, 1, distances.size(2), distances.size(3))
+        spikefilter = torch.tensor([[-0.5, -0.5, -0.5, -0.5], [-0.5, 2.5, 2.5, -0.5], [-0.5, 2.5, 2.5, -0.5], [-0.5, -0.5, -0.5, -0.5]]).cuda()
+        spikefilter = spikefilter.expand(1, 1, -1, -1)
         act_map_spike = F.conv2d(activation_maps, spikefilter)
-        prototype_activations = F.maxpool2d(act_map_spike, kernel_size = (act_map_spike.size(2), act_map_spike.size(3)))
+        act_map_spike = act_map_spike.view(batch_size, self.num_prototypes, act_map_spike.size(2), act_map_spike.size(3))
+        prototype_activations = F.max_pool2d(act_map_spike, kernel_size = (act_map_spike.size(2), act_map_spike.size(3)))
+        prototype_activations = prototype_activations.view(-1, self.num_prototypes)
+        '''
+        min1, ind1 = torch.min(distances, 2)
+        min_distances, indy = torch.min(min1, 2)
+        min_distances = min_distances.view(-1, self.num_prototypes)
+        indx = torch.gather(ind1, 2, indy.unsqueeze(2)).squeeze()
+
+        prototype_activations = self.distance_2_similarity(min_distances.view(-1, self.num_prototypes))
         logits = self.last_layer(prototype_activations)
-        return logits, min_distances
+
+        act_maps = self.distance_2_similarity(distances)
+        return logits, min_distances, act_maps,indx, indy
 
     def push_forward(self, x):
         '''this method is needed for the pushing operation'''

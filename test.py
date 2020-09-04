@@ -140,52 +140,9 @@ from settings import num_train_epochs, num_warm_epochs, push_start, push_epochs
 log('start training')
 import copy
 for epoch in range(num_train_epochs):
-    log('epoch: \t{0}'.format(epoch))
-    if epoch < num_warm_epochs:
-        tnt.warm_only(model=ppnet_multi, log=log)
-        _ = tnt.train(model=ppnet_multi, dataloader=train_loader, optimizer=warm_optimizer,
-                      class_specific=class_specific, coefs=coefs, log=log)
-    else:        
-        tnt.joint(model=ppnet_multi, log=log)
-        _ = tnt.train(model=ppnet_multi, dataloader=train_loader, optimizer=joint_optimizer,
-                      class_specific=class_specific, coefs=coefs, log=log)
-        joint_lr_scheduler.step()
-
-    accu = tnt.test(model=ppnet_multi, dataloader=test_loader,
-                    class_specific=class_specific, log=log)
-    save.save_model_w_condition(model=ppnet, model_dir=model_dir, model_name=str(epoch) + 'nopush', accu=accu,
-                                target_accu=0.70, log=log)
-
-
-    if epoch >= push_start and epoch in push_epochs:
-        push.push_prototypes(
-            train_push_loader, # pytorch dataloader (must be unnormalized in [0,1])
-            prototype_network_parallel=ppnet_multi, # pytorch network with prototype_vectors
-            class_specific=class_specific,
-            preprocess_input_function=preprocess_input_function, # normalize if needed
-            prototype_layer_stride=1,
-            root_dir_for_saving_prototypes=img_dir, # if not None, prototypes will be saved here
-            epoch_number=epoch, # if not provided, prototypes saved previously will be overwritten
-            prototype_img_filename_prefix=prototype_img_filename_prefix,
-            prototype_self_act_filename_prefix=prototype_self_act_filename_prefix,
-            proto_bound_boxes_filename_prefix=proto_bound_boxes_filename_prefix,
-            save_prototype_class_identity=True,
-            log=log)
-        accu = tnt.per_class_test(model=ppnet_multi, dataloader=test_loader,
-                        class_specific=class_specific, log=log)
-        save.save_model_w_condition(model=ppnet, model_dir=model_dir, model_name=str(epoch) + 'push', accu=accu,
-                                    target_accu=0.70, log=log)
-
-        if prototype_activation_function != 'linear':
-            tnt.last_only(model=ppnet_multi, log=log)
-            for i in range(20):
-                log('iteration: \t{0}'.format(i))
-                _ = tnt.train(model=ppnet_multi, dataloader=train_loader, optimizer=last_layer_optimizer,
-                              class_specific=class_specific, coefs=coefs, log=log)
-                accu = tnt.per_class_test(model=ppnet_multi, dataloader=test_loader,
+    accu = tnt.per_class_test(model=ppnet_multi, dataloader=test_loader,
                                 class_specific=class_specific, log=log)
-                save.save_model_w_condition(model=ppnet, model_dir=model_dir, model_name=str(epoch) + '_' + str(i) + 'push', accu=accu,
-                                            target_accu=0.70, log=log)
+    break
    
 logclose()
 
